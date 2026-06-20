@@ -4,7 +4,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import androidx.core.app.NotificationCompat
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -12,10 +11,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
+import androidx.core.app.NotificationCompat
 import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -23,9 +25,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 class NotInterestedService : Service() {
 
-    private lateinit var captureManager: ScreenCaptureManager
     private lateinit var overlayManager: OverlayManager
     private lateinit var nudeNetDetector: NudeNetDetector
+    private lateinit var captureManager: ScreenCaptureManager
     private val whitelistManager = AppWhitelistManager()
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -38,11 +40,6 @@ class NotInterestedService : Service() {
     private val isInferring = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
 
-    private var frameCount = 0
-    private val frameSkip = 4
-    private var confidenceThreshold = 0.6f
-
-    // Screen on/off receiver — pause processing when screen is off to save battery
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -52,6 +49,12 @@ class NotInterestedService : Service() {
                     mainHandler.post { overlayManager.clearRegions() }
                 }
                 Intent.ACTION_SCREEN_ON -> isPaused.set(false)
+                Intent.ACTION_USER_PRESENT -> {
+                    // Device unlocked — if the projection was stopped by screen lock, notify user
+                    if (!isRunning.get()) {
+                        showReacquisitionNotification()
+                    }
+                }
             }
         }
     }
@@ -62,16 +65,21 @@ class NotInterestedService : Service() {
         super.onCreate()
         isRunning.set(true)
 
+        // Call startForeground() IMMEDIATELY in onCreate() — this covers the START_STICKY
+        // restart case where onStartCommand() receives a null intent and handleStart() is
+        // never called, which would otherwise trigger ForegroundServiceDidNotStartInTimeException.
+        startAsForeground()
+
         overlayManager = OverlayManager(this)
-        captureManager = ScreenCaptureManager(this, ::onFrame)
         nudeNetDetector = NudeNetDetector(this)
+        captureManager = ScreenCaptureManager(this, ::onFrame, ::onProjectionStopped)
 
         registerReceiver(screenReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
         })
 
-        // Load model in background — notify Flutter when ready or on failure
         inferenceExecutor.execute {
             try {
                 nudeNetDetector.load()
@@ -86,7 +94,16 @@ class NotInterestedService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        // null intent = START_STICKY restart after process kill.
+        // The MediaProjection token is gone — cannot resume capture silently.
+        // Show a notification so the user can tap to re-enable, then stop.
+        if (intent == null) {
+            showReacquisitionNotification()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        when (intent.action) {
             ACTION_START -> handleStart(intent)
             ACTION_PAUSE -> {
                 isPaused.set(true)
@@ -107,9 +124,14 @@ class NotInterestedService : Service() {
         return START_STICKY
     }
 
+    private var confidenceThreshold = 0.6f
+    private var frameCount = 0
+    private val frameSkip = 4
+
     private fun handleStart(intent: Intent) {
         confidenceThreshold = intent.getFloatExtra(EXTRA_THRESHOLD, 0.6f)
-        startAsForeground()
+        // startForeground() was already called in onCreate() — update notification to running state
+        updateNotification(false)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) overlayManager.show()
 
@@ -120,6 +142,17 @@ class NotInterestedService : Service() {
         val width = intent.getIntExtra(EXTRA_WIDTH, 480)
         val height = intent.getIntExtra(EXTRA_HEIGHT, 854)
         captureManager.start(resultCode, resultData, width, height, resources.displayMetrics.densityDpi)
+    }
+
+    // Called on the main thread when the system stops the MediaProjection session.
+    // Triggers: screen lock (Android 15 QPR1+), another app starts projection, user taps chip.
+    private fun onProjectionStopped() {
+        isPaused.set(true)
+        pendingFrame.getAndSet(null)?.recycle()
+        overlayManager.clearRegions()
+        overlayManager.hide()
+        showReacquisitionNotification()
+        stopSelf()
     }
 
     private fun onFrame(bitmap: Bitmap) {
@@ -153,7 +186,6 @@ class NotInterestedService : Service() {
                     }
                 }
             } catch (_: Exception) {
-                // Inference errors must not crash the service — swallow silently
             } finally {
                 frame.recycle()
                 isInferring.set(false)
@@ -202,7 +234,7 @@ class NotInterestedService : Service() {
 
         val builder = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Content Filter Active")
-            .setContentText("Tap to open · Monitoring screen")
+            .setContentText(if (paused) "Paused — resumes automatically in 15 min" else "Tap to open · Monitoring screen")
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentIntent(openIntent)
             .addAction(android.R.drawable.ic_delete, "Stop", stopIntent)
@@ -215,8 +247,6 @@ class NotInterestedService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             builder.addAction(0, "Pause 15 min", pauseIntent)
-        } else {
-            builder.setContentText("Paused — resumes automatically in 15 min")
         }
 
         val notification = builder.build()
@@ -226,6 +256,31 @@ class NotInterestedService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    // Shows a tap-to-restart notification after the projection session ends unexpectedly.
+    // Triggered by: screen lock (Android 15), START_STICKY restart with no token,
+    // another app taking over the MediaProjection session.
+    private fun showReacquisitionNotification() {
+        val channelId = "not_interested_recovery"
+        val channel = NotificationChannel(channelId, "Content Filter Status", NotificationManager.IMPORTANCE_DEFAULT)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+
+        val openIntent = PendingIntent.getActivity(
+            this, 2,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Content Filter Paused")
+            .setContentText("Tap to re-enable protection")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(openIntent)
+            .setAutoCancel(true)
+            .build()
+
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_RECOVERY_ID, notification)
     }
 
     companion object {
@@ -240,6 +295,7 @@ class NotInterestedService : Service() {
         const val EXTRA_HEIGHT = "HEIGHT"
         const val EXTRA_THRESHOLD = "THRESHOLD"
         const val NOTIFICATION_ID = 1001
+        const val NOTIFICATION_RECOVERY_ID = 1002
         const val CHANNEL_SCREEN_CAPTURE = "com.yonderchat.not_interested/screen_capture"
 
         val isRunning = AtomicBoolean(false)

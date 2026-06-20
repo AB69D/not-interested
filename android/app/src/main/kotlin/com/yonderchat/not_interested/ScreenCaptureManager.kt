@@ -11,21 +11,35 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 
 class ScreenCaptureManager(
     private val context: Context,
     private val onFrame: (Bitmap) -> Unit,
+    private val onProjectionStopped: () -> Unit,
 ) {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var stoppedExternally = false
 
     private val thread = HandlerThread("ScreenCaptureThread").also { it.start() }
     private val handler = Handler(thread.looper)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun start(resultCode: Int, resultData: Intent, width: Int, height: Int, dpi: Int) {
-        val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = manager.getMediaProjection(resultCode, resultData)
+        val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjection = mgr.getMediaProjection(resultCode, resultData)
+
+        // API 34+ REQUIREMENT: register callback BEFORE createVirtualDisplay().
+        // Without this, createVirtualDisplay() throws IllegalStateException on API 34+.
+        // onStop() fires when: screen locks, another app starts projection, user taps system chip.
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                stoppedExternally = true
+                onProjectionStopped()
+            }
+        }, mainHandler) // mainHandler so onStop() runs on main thread — safe to call stop() from there
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         imageReader?.setOnImageAvailableListener({ reader ->
@@ -35,7 +49,6 @@ class ScreenCaptureManager(
                 val rowStride = plane.rowStride
                 val pixelStride = plane.pixelStride
                 val rowPadding = rowStride - pixelStride * width
-
                 val bitmap = Bitmap.createBitmap(
                     width + rowPadding / pixelStride,
                     height,
@@ -59,11 +72,17 @@ class ScreenCaptureManager(
     }
 
     fun stop() {
+        // Correct teardown order: VirtualDisplay → ImageReader → HandlerThread → MediaProjection
         virtualDisplay?.release()
         imageReader?.close()
-        mediaProjection?.stop()
+        thread.quitSafely()
+        if (!stoppedExternally) {
+            // Only call stop() if we weren't already stopped by the system via onStop() callback
+            mediaProjection?.stop()
+        }
         virtualDisplay = null
         imageReader = null
         mediaProjection = null
+        stoppedExternally = false
     }
 }

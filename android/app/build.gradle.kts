@@ -42,6 +42,7 @@ android {
 
 dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
 }
 
 flutter {
