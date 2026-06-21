@@ -2,6 +2,17 @@
 
 > Real-time nudity blur for Android — works across every app, entirely on-device.
 
+[![CI](https://github.com/AB69D/not-interested/actions/workflows/ci.yml/badge.svg)](https://github.com/AB69D/not-interested/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/AB69D/not-interested?label=download&logo=android)](https://github.com/AB69D/not-interested/releases/latest)
+
+## Download
+
+**[⬇ Download latest APK](https://github.com/AB69D/not-interested/releases/latest)**
+
+> Enable *Install from unknown sources* on your device before installing.
+
+---
+
 **Not Interested** runs silently in the background and automatically blurs sensitive content the moment it appears on your screen — in browsers, social media apps, messaging apps, or anywhere else. No cloud, no data upload, no account required.
 
 ---
@@ -29,12 +40,6 @@ The entire pipeline runs locally. Nothing ever leaves your device.
 | **Detection counter** | Live count of blur events during a session |
 | **One-time setup** | Guided 4-step onboarding, permissions asked once |
 | **No account, no ads** | Open source and free |
-
----
-
-## Screenshots
-
-> _Coming soon_
 
 ---
 
@@ -78,8 +83,8 @@ All permissions are requested inline with explanations. The overlay permission o
 
 ### Prerequisites
 
-- Flutter `^3.10` / Dart `^3.10.4`
-- Android device or emulator (API 26+)
+- Flutter `3.38.5` / Dart `^3.10.4`
+- Android device or emulator (API 29+)
 
 ### Run
 
@@ -89,6 +94,38 @@ flutter run
 ```
 
 The ONNX model (`assets/models/nudenet_320n.onnx`) is bundled — no extra download needed.
+
+---
+
+## Releases
+
+Releases are built and signed automatically by GitHub Actions.
+
+### Create a new release
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The workflow builds a signed APK and publishes it to the [Releases](https://github.com/AB69D/not-interested/releases) page automatically.
+
+### First-time signing setup
+
+Run the keystore generator script once, then add the printed values as GitHub repository secrets:
+
+```bash
+bash scripts/generate_keystore.sh
+```
+
+Add these secrets at **Repo → Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|---|---|
+| `KEYSTORE_BASE64` | base64-encoded `.jks` file (printed by the script) |
+| `KEY_ALIAS` | `not_interested` |
+| `KEY_PASSWORD` | password you chose |
+| `STORE_PASSWORD` | same password |
 
 ---
 
