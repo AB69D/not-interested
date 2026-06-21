@@ -34,8 +34,6 @@ class MainActivity : FlutterActivity() {
         mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         setupScreenCaptureChannel(flutterEngine)
         setupOverlayChannel(flutterEngine)
-        // Start the 15-minute watchdog on every app open
-        ServiceWatchdogWorker.schedule(this)
         // Request battery optimization exemption if not already granted
         requestBatteryOptimizationExemption()
     }

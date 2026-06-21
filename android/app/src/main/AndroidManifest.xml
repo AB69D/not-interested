@@ -14,6 +14,9 @@
     <!-- Required to exempt the service from Doze-mode battery optimization.
          Without this, requesting exemption via ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS throws. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Required on API 31+ for setExactAndAllowWhileIdle() to fire precisely in Doze.
+         Falls back gracefully to setAndAllowWhileIdle() (inexact) if the user revokes this. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <application
         android:label="Not Interested"
@@ -44,12 +47,23 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
-        <!-- Auto-start on boot -->
+        <!-- Auto-start on boot and after app update -->
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- AlarmManager self-chaining heartbeat — fires even in Doze to detect unexpected kills -->
+        <receiver
+            android:name=".AlarmHeartbeatReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.yonderchat.not_interested.HEARTBEAT" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
 

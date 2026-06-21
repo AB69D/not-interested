@@ -1,4 +1,5 @@
 import 'package:go_router/go_router.dart';
+import '../../features/battery/view/battery_guidance_screen.dart';
 import '../../features/home/view/home_screen.dart';
 import '../../features/onboarding/view/onboarding_screen.dart';
 import '../../features/settings/view/settings_screen.dart';
@@ -27,6 +28,11 @@ GoRouter createRouter({required String initialLocation}) {
         path: '/whitelist',
         name: 'whitelist',
         builder: (context, state) => const WhitelistScreen(),
+      ),
+      GoRoute(
+        path: '/battery-guidance',
+        name: 'battery-guidance',
+        builder: (context, state) => const BatteryGuidanceScreen(),
       ),
     ],
   );

@@ -43,6 +43,14 @@ class SettingsScreen extends StatelessWidget {
               trailing: const Icon(Icons.chevron_right, color: Colors.white38),
               onTap: () => context.push('/whitelist'),
             ),
+            ListTile(
+              leading: const Icon(Icons.battery_saver_outlined, color: Colors.white70),
+              title: const Text('Long-Run Setup', style: TextStyle(color: Colors.white)),
+              subtitle: const Text('Keep the filter running for 30+ days',
+                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+              onTap: () => context.push('/battery-guidance'),
+            ),
             const SizedBox(height: 8),
             _SettingsTile(
               title: 'Sensitivity',

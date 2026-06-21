@@ -40,6 +40,10 @@ class NotInterestedService : Service() {
     private val isInferring = AtomicBoolean(false)
     private val isPaused = AtomicBoolean(false)
 
+    // True when we've already handled the stop (user requested, projection ended, or null-intent
+    // restart). Prevents onDestroy() from scheduling a duplicate recovery alarm.
+    @Volatile private var scheduledRecovery = false
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -98,6 +102,7 @@ class NotInterestedService : Service() {
         // The MediaProjection token is gone — cannot resume capture silently.
         // Show a notification so the user can tap to re-enable, then stop.
         if (intent == null) {
+            scheduledRecovery = true
             showReacquisitionNotification()
             stopSelf()
             return START_NOT_STICKY
@@ -112,7 +117,13 @@ class NotInterestedService : Service() {
                 mainHandler.postDelayed(pauseResumeRunnable, 15 * 60 * 1000L)
                 updateNotification(true)
             }
-            ACTION_STOP -> stopSelf()
+            ACTION_STOP -> {
+                scheduledRecovery = true
+                AlarmHeartbeatReceiver.cancel(this)
+                ServiceWatchdogWorker.cancel(this)
+                setServiceEnabled(false)
+                stopSelf()
+            }
             ACTION_SET_THRESHOLD -> {
                 confidenceThreshold = intent.getFloatExtra(EXTRA_THRESHOLD, 0.6f)
             }
@@ -129,9 +140,15 @@ class NotInterestedService : Service() {
     private val frameSkip = 4
 
     private fun handleStart(intent: Intent) {
+        scheduledRecovery = false
         confidenceThreshold = intent.getFloatExtra(EXTRA_THRESHOLD, 0.6f)
         // startForeground() was already called in onCreate() — update notification to running state
         updateNotification(false)
+        // Record that the filter is active so BootReceiver can reschedule watchdogs on reboot
+        setServiceEnabled(true)
+        // Start dual-layer watchdog: WorkManager (15 min) + AlarmManager (fires in Doze too)
+        ServiceWatchdogWorker.schedule(this)
+        AlarmHeartbeatReceiver.schedule(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) overlayManager.show()
 
@@ -147,6 +164,7 @@ class NotInterestedService : Service() {
     // Called on the main thread when the system stops the MediaProjection session.
     // Triggers: screen lock (Android 15 QPR1+), another app starts projection, user taps chip.
     private fun onProjectionStopped() {
+        scheduledRecovery = true
         isPaused.set(true)
         pendingFrame.getAndSet(null)?.recycle()
         overlayManager.clearRegions()
@@ -203,7 +221,7 @@ class NotInterestedService : Service() {
     }
 
     override fun onDestroy() {
-        isRunning.set(false)
+        val wasCapturing = isRunning.getAndSet(false)
         unregisterReceiver(screenReceiver)
         captureManager.stop()
         overlayManager.hide()
@@ -211,7 +229,17 @@ class NotInterestedService : Service() {
         inferenceExecutor.shutdownNow()
         pendingFrame.getAndSet(null)?.recycle()
         mainHandler.removeCallbacks(pauseResumeRunnable)
+        // If the service was killed unexpectedly (OEM battery manager, LMK, etc.) without us
+        // handling recovery, schedule a quick alarm to notify the user in ~3 seconds.
+        if (!scheduledRecovery && wasCapturing) {
+            AlarmHeartbeatReceiver.schedule(this, delayMs = 3_000L)
+        }
         super.onDestroy()
+    }
+
+    private fun setServiceEnabled(enabled: Boolean) {
+        getSharedPreferences("not_interested_prefs", MODE_PRIVATE)
+            .edit().putBoolean("was_running", enabled).apply()
     }
 
     private fun updateNotification(paused: Boolean) = startAsForeground(paused)
